@@ -135,15 +135,17 @@ test('editing a line and enabling SRT is reflected in the next save', async () =
   await ctx.close();
 });
 
-test('without speech support the app explains instead of crashing', async () => {
+test('without speech support the app falls back to tab audio instead of crashing', async () => {
   const ctx = await browser.newContext();
   await ctx.addInitScript(() => { delete window.SpeechRecognition; delete window.webkitSpeechRecognition; });
   const page = await ctx.newPage();
   const errors = []; page.on('pageerror', e => errors.push(e.message));
   await page.goto(base);
   await page.waitForFunction(() => window.__earshot);
-  assert.equal(await page.isVisible('#banner'), true);
-  assert.match(await page.textContent('#banner'), /Chrome, Edge, or Safari/);
+  // Mic mode is unavailable, so the app falls back to on-device tab transcription.
+  assert.equal(await page.isDisabled('[data-source="mic"]'), true);
+  assert.equal(await page.getAttribute('[data-source="tab"]', 'aria-pressed'), 'true');
+  assert.equal(await page.isVisible('#engineCard'), true);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

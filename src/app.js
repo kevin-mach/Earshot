@@ -1,4 +1,5 @@
 import { LiveRecognizer, isSupported } from './recognizer.js';
+import { TabTranscriber, canCaptureTab, MODELS } from './tab-source.js';
 import * as store from './storage.js';
 import { FORMATS, baseName, clock, tidy, wordCount } from './format.js';
 
@@ -11,6 +12,8 @@ const el = {
   formats: $('formats'), autosave: $('autosave'), saveBtn: $('saveBtn'), newBtn: $('newBtn'),
   saveStatus: $('saveStatus'), files: $('files'), refresh: $('refreshBtn'),
   banner: $('banner'), theme: $('themeBtn'),
+  sourceBtns: document.querySelectorAll('[data-source]'), engineCard: $('engineCard'), model: $('model'),
+  modelBar: $('modelBar'), modelStatus: $('modelStatus'), emptyHint: $('emptyHint'),
 };
 
 const LANGS = [
@@ -39,11 +42,20 @@ let tick = null;
 let audio = null;             // { ctx, stream, raf }
 let saveTimer = null;
 let dirty = false;
+let source = prefs.get('source', 'mic');   // 'mic' | 'tab'
+let tab = null;               // TabTranscriber (kept between runs so the model stays loaded)
+let captureBase = 0;          // session offset when the current tab capture began
+let draining = false;
 
 function freshSession() {
   return { id: crypto.randomUUID(), startedAt: new Date().toISOString(), lang: prefs.get('lang', navigator.language || 'en-US'), title: '', segments: [] };
 }
 const recording = () => Boolean(recognizer?.wanted);
+const ERRORS = {
+  'share-cancelled': 'Sharing was cancelled. Press record and pick the tab that\'s playing your video.',
+  'no-audio': 'No audio came with that share. Press record again, pick a Chrome tab, and make sure "Also share tab audio" is switched on.',
+  'capture-failed': 'Couldn\'t capture that tab\'s audio.',
+};
 const now = () => elapsedBefore + (recording() ? performance.now() - runStart : 0);
 
 // ---------- rendering ----------
@@ -95,11 +107,12 @@ function changed() {
   }
 }
 
-function addFinal(text) {
+function addFinal(text, timing) {
   const t = tidy(text);
   if (!t) return;
-  const end = now();
-  const seg = { start: utterStart ?? Math.max(0, end - 1500), end, text: t };
+  let seg;
+  if (timing) seg = { start: Math.round(captureBase + timing.startMs), end: Math.round(captureBase + timing.endMs), text: t };
+  else { const end = now(); seg = { start: utterStart ?? Math.max(0, end - 1500), end, text: t }; }
   utterStart = null;
   session.segments.push(seg);
   el.list.append(renderSegment(seg, session.segments.length - 1, true));
@@ -109,16 +122,70 @@ function addFinal(text) {
 
 // ---------- recording ----------
 async function startRecording() {
+  if (draining) return;
+  banner('');
+  if (!session.segments.length && elapsedBefore === 0) session.startedAt = new Date().toISOString();
+  session.lang = el.lang.value;
+  session.source = source;
+  return source === 'tab' ? startTab() : startMic();
+}
+
+function wireCommon(r) {
+  r.addEventListener('final', (e) => {
+    if (source !== 'tab') el.interim.textContent = '';
+    addFinal(e.detail.text, source === 'tab' ? e.detail : null);
+  });
+}
+
+function setRecUI(on) {
+  el.rec.setAttribute('aria-pressed', String(on));
+  el.rec.setAttribute('aria-label', on ? 'Stop recording' : 'Start recording');
+  el.sourceBtns.forEach(b => (b.disabled = on || draining || (b.dataset.source === 'mic' ? !isSupported() : !canCaptureTab())));
+  clearInterval(tick);
+  if (on) tick = setInterval(setTimer, 250);
+  updateStats();
+}
+
+async function startTab() {
+  if (!canCaptureTab()) { banner('This browser can\'t capture tab audio. Use Chrome or Edge on a desktop.'); return; }
+  if (!tab || tab.modelSize !== el.model.value) {
+    tab?.dispose();
+    tab = new TabTranscriber({ model: el.model.value, lang: el.lang.value });
+    wireCommon(tab);
+    tab.addEventListener('interim', (e) => { el.interim.textContent = e.detail; });
+    tab.addEventListener('level', (e) => { el.level.style.width = Math.min(100, e.detail * 320) + '%'; });
+    tab.addEventListener('progress', (e) => paintModel(e.detail));
+    tab.addEventListener('error', (e) => {
+      if (String(e.detail).startsWith('model-load')) {
+        banner('The speech model couldn\'t be downloaded. Check your internet connection (it\'s only needed the first time) and press record again.');
+        stopRecording();
+        return;
+      }
+      banner(ERRORS[e.detail] || `Tab transcription error: ${e.detail}`);
+    });
+    tab.addEventListener('ended', () => { banner('Tab sharing ended. Finishing the last few lines…'); stopRecording(); });
+  }
+  tab.lang = el.lang.value;
+  recognizer = tab;
+  runStart = performance.now();
+  const ok = await tab.start();
+  if (!ok) { recognizer = null; setRecUI(false); return; }
+  captureBase = elapsedBefore;
+  runStart = performance.now();
+  setRecUI(true);
+}
+
+function startMic() {
   if (!isSupported()) {
-    banner('This browser has no built-in speech recognition. Use Chrome, Edge, or Safari to transcribe.');
+    banner('This browser has no built-in speech recognition. Use Chrome, Edge, or Safari, or switch to Tab audio.');
     return;
   }
   recognizer = new LiveRecognizer({ lang: el.lang.value });
+  wireCommon(recognizer);
   recognizer.addEventListener('interim', (e) => {
     if (e.detail && utterStart == null) utterStart = now();
     el.interim.textContent = e.detail;
   });
-  recognizer.addEventListener('final', (e) => { el.interim.textContent = ''; addFinal(e.detail.text); });
   recognizer.addEventListener('error', (e) => {
     const map = {
       'not-allowed': 'Microphone access was blocked. Allow it in the address bar, then press record again.',
@@ -128,33 +195,34 @@ async function startRecording() {
       'language-not-supported': 'That language is not supported by this browser\'s speech engine.',
     };
     banner(map[e.detail] || `Recognition error: ${e.detail}`);
-    if (!recognizer.wanted) stopRecording();
+    if (!recognizer?.wanted) stopRecording();
   });
-
-  banner('');
-  if (!session.segments.length && elapsedBefore === 0) session.startedAt = new Date().toISOString();
-  session.lang = el.lang.value;
   runStart = performance.now();
   recognizer.start();
-  el.rec.setAttribute('aria-pressed', 'true');
-  el.rec.setAttribute('aria-label', 'Stop recording');
-  tick = setInterval(setTimer, 250);
-  updateStats();
+  setRecUI(true);
   startMeter();
 }
 
-function stopRecording() {
-  if (!recognizer) return;
+async function stopRecording() {
+  const r = recognizer;
+  if (!r) return;
   elapsedBefore = now();
-  recognizer.stop();
   recognizer = null;
-  clearInterval(tick);
   setTimer();
   stopMeter();
+  el.level.style.width = '0';
+  if (r instanceof TabTranscriber) {
+    draining = true;
+    setRecUI(false);
+    el.rec.disabled = true;
+    await r.stop();             // waits for queued clips to finish transcribing
+    draining = false;
+    el.rec.disabled = false;
+  } else {
+    r.stop();
+  }
   el.interim.textContent = '';
-  el.rec.setAttribute('aria-pressed', 'false');
-  el.rec.setAttribute('aria-label', 'Start recording');
-  updateStats();
+  setRecUI(false);
   if (dirty && el.autosave.checked && folderOk) save({ quiet: true });
 }
 
@@ -221,7 +289,7 @@ async function save({ quiet = false } = {}) {
 }
 
 function newSession() {
-  if (recording()) stopRecording();
+  if (recording() || draining) { status('Stop recording first.'); return; }
   if (dirty && session.segments.length && !confirm('This session has unsaved changes. Start a new one anyway?')) return;
   session = freshSession();
   session.lang = el.lang.value;
@@ -297,8 +365,50 @@ function setupLangs() {
   el.lang.addEventListener('change', () => {
     prefs.set('lang', el.lang.value);
     session.lang = el.lang.value;
-    recognizer?.setLang(el.lang.value);
+    if (recognizer instanceof LiveRecognizer) recognizer.setLang(el.lang.value);
   });
+}
+
+function paintModel(p) {
+  const m = MODELS[el.model.value];
+  if (p?.loading) {
+    el.modelBar.hidden = false;
+    el.modelBar.value = Math.round(p.progress || 0);
+    const mb = p.total ? ` (${(p.loaded / 1048576).toFixed(0)} / ${(p.total / 1048576).toFixed(0)} MB)` : '';
+    el.modelStatus.textContent = p.progress ? `Downloading model… ${Math.round(p.progress)}%${mb}` : 'Preparing model…';
+  } else if (p?.failed) {
+    el.modelBar.hidden = true;
+    el.modelStatus.textContent = 'Download failed. It will retry when you press record.';
+  } else if (p?.device) {
+    el.modelBar.hidden = true;
+    el.modelStatus.textContent = `Ready · running on ${p.device === 'webgpu' ? 'GPU (WebGPU)' : 'CPU (WebAssembly)'}`;
+  } else {
+    el.modelBar.hidden = true;
+    el.modelStatus.textContent = `Downloads ${m.size} once, then works offline. Audio never leaves your computer.`;
+  }
+}
+
+function setSource(next) {
+  if (recording() || draining) return;
+  source = next;
+  prefs.set('source', source);
+  el.sourceBtns.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.source === source)));
+  el.engineCard.hidden = source !== 'tab';
+  el.emptyHint.innerHTML = source === 'tab'
+    ? 'Press record, pick the tab playing your video, and keep <b>“Also share tab audio”</b> on. Lines appear a few seconds behind the video and autosave to your folder.'
+    : 'Lines appear here as you speak. Click any line to fix it. Everything autosaves to your folder.';
+}
+
+function setupSource() {
+  el.model.replaceChildren(...Object.entries(MODELS).map(([k, m]) => new Option(m.label, k)));
+  el.model.value = prefs.get('model', 'base');
+  el.model.addEventListener('change', () => { prefs.set('model', el.model.value); paintModel(); });
+  el.sourceBtns.forEach(b => b.addEventListener('click', () => setSource(b.dataset.source)));
+  const micBtn = document.querySelector('[data-source="mic"]'), tabBtn = document.querySelector('[data-source="tab"]');
+  if (!canCaptureTab()) { tabBtn.disabled = true; tabBtn.title = 'Tab audio capture needs Chrome or Edge on a desktop.'; }
+  if (!isSupported()) { micBtn.disabled = true; micBtn.title = 'This browser has no built-in speech recognition.'; }
+  setSource(!canCaptureTab() ? 'mic' : !isSupported() ? 'tab' : source);
+  paintModel();
 }
 
 function setupTheme() {
@@ -341,7 +451,7 @@ function setupKeys() {
 }
 
 async function init() {
-  setupFormats(); setupLangs(); setupTheme(); setupEditing(); setupKeys();
+  setupFormats(); setupLangs(); setupSource(); setupTheme(); setupEditing(); setupKeys();
   el.autosave.checked = prefs.get('autosave', true);
   el.autosave.addEventListener('change', () => prefs.set('autosave', el.autosave.checked));
   el.rec.addEventListener('click', toggle);
@@ -353,7 +463,7 @@ async function init() {
   elapsedBefore = session.segments.at(-1)?.end ?? 0;
   renderAll(); setTimer();
 
-  if (!isSupported()) banner('Live transcription needs the Web Speech API: use Chrome, Edge, or Safari. You can still open and edit drafts here.');
+  if (!isSupported() && !canCaptureTab()) banner('Live transcription needs Chrome, Edge, or Safari. You can still open and edit drafts here.');
   else if (!isSecureContext) banner('The microphone only works over https:// or on localhost.');
 
   if (store.canPickFolder()) {
@@ -365,7 +475,7 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Test hook — lets the browser test inspect state without reaching into closures.
-  window.__earshot = { get session() { return session; }, save, toggle, get folderOk() { return folderOk; } };
+  window.__earshot = { get session() { return session; }, save, toggle, get folderOk() { return folderOk; }, get draining() { return draining; } };
 }
 
 init();

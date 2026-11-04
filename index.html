@@ -37,11 +37,18 @@
       <p id="interim" class="interim" aria-hidden="true"></p>
       <div id="empty" class="empty">
         <p class="empty-big">Press <kbd>Space</kbd> or the record button and start talking.</p>
-        <p>Lines appear here as you speak. Click any line to fix it. Everything autosaves to your folder.</p>
+        <p id="emptyHint">Lines appear here as you speak. Click any line to fix it. Everything autosaves to your folder.</p>
       </div>
     </section>
 
     <aside class="side">
+      <section class="card" id="engineCard" hidden>
+        <h2>Tab audio engine</h2>
+        <label class="field"><span>Whisper model</span><select id="model"></select></label>
+        <progress id="modelBar" max="100" value="0" hidden></progress>
+        <p id="modelStatus" class="muted small"></p>
+      </section>
+
       <section class="card">
         <h2>Save formats</h2>
         <div id="formats" class="formats"></div>
@@ -64,6 +71,10 @@
     <button id="recBtn" class="rec" type="button" aria-pressed="false" aria-label="Start recording">
       <span class="rec-core"></span>
     </button>
+    <div class="seg" role="group" aria-label="Audio source">
+      <button type="button" data-source="mic" aria-pressed="true">🎤 Mic</button>
+      <button type="button" data-source="tab" aria-pressed="false">🖥️ Tab audio</button>
+    </div>
     <div class="dock-mid">
       <div class="timer" id="timer">00:00:00</div>
       <div class="meter" aria-hidden="true"><span id="level"></span></div>

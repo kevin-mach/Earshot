@@ -103,3 +103,25 @@ export const FORMATS = {
   vtt:  { label: 'WebVTT', ext: 'vtt',    mime: 'text/vtt',         render: toVtt },
   json: { label: 'JSON', ext: 'json',     mime: 'application/json', render: toJSON },
 };
+
+// Whisper adds sound tags ("[Music]", "(laughs)", "♪") and, on near-silence,
+// stock phrases learned from YouTube captions. Strip those; keep real speech.
+const HALLUCINATIONS = [
+  /^thanks? (you )?(so much )?for watching[.!]*$/i,
+  /^(please )?(like and )?subscribe[.!]*$/i,
+  /^thank you[.!]*$/i,
+  /^you$/i,
+  /^bye[.!]*$/i,
+  /^subtitles? by .*$/i,
+  /^\.+$/,
+];
+
+export function cleanWhisper(text) {
+  let t = String(text ?? '')
+    .replace(/\[[^\]]*\]|\([^)]*\)|\*[^*]*\*|[♪♫]+/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+  if (!t || HALLUCINATIONS.some(r => r.test(t))) return '';
+  // Collapse a phrase stuck on repeat ("I'm I'm I'm I'm ..."), a classic Whisper failure.
+  t = t.replace(/\b(.{2,40}?)(?:[\s,.]+\1\b){3,}/gi, '$1');
+  return tidy(t);
+}

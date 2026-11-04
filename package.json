@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node scripts/serve.mjs",
     "test": "node --test tests/unit.test.mjs",
-    "test:e2e": "node --test tests/e2e.test.mjs",
+    "test:e2e": "node --test tests/e2e*.test.mjs",
     "test:all": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
