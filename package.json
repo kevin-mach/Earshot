@@ -1,0 +1,17 @@
+{
+  "name": "earshot",
+  "version": "1.0.0",
+  "description": "Live speech-to-text in the browser that saves transcripts straight to a local folder.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "test": "node --test tests/unit.test.mjs",
+    "test:e2e": "node --test tests/e2e.test.mjs",
+    "test:all": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.48.0"
+  },
+  "license": "MIT"
+}

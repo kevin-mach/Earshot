@@ -1,0 +1,11 @@
+{
+  "name": "Earshot — Live Transcription",
+  "short_name": "Earshot",
+  "description": "Live speech-to-text that saves transcripts to a local folder.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1115",
+  "theme_color": "#ff5a36",
+  "icons": [{ "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

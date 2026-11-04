@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Earshot — Live Transcription</title>
+  <meta name="description" content="Live speech-to-text in your browser that saves transcripts straight to a folder on your computer.">
+  <meta name="theme-color" content="#0f1115">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="src/styles.css">
+  <script type="module" src="src/app.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <img src="icons/icon.svg" alt="" width="26" height="26">
+      <span>Earshot</span>
+    </div>
+    <div class="bar-right">
+      <button id="folderBtn" class="chip" type="button" title="Choose where transcripts are saved">
+        <span class="dot" id="folderDot"></span><span id="folderLabel">Choose folder</span>
+      </button>
+      <button id="themeBtn" class="icon-btn" type="button" aria-label="Toggle theme">◐</button>
+    </div>
+  </header>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main class="layout">
+    <section class="stage" aria-label="Transcript">
+      <div class="stage-head">
+        <input id="title" class="title" placeholder="Untitled session" aria-label="Session title" autocomplete="off">
+        <div class="stats"><span id="words">0 words</span><span id="segCount">0 lines</span></div>
+      </div>
+      <ol id="transcript" class="transcript" aria-live="polite"></ol>
+      <p id="interim" class="interim" aria-hidden="true"></p>
+      <div id="empty" class="empty">
+        <p class="empty-big">Press <kbd>Space</kbd> or the record button and start talking.</p>
+        <p>Lines appear here as you speak. Click any line to fix it. Everything autosaves to your folder.</p>
+      </div>
+    </section>
+
+    <aside class="side">
+      <section class="card">
+        <h2>Save formats</h2>
+        <div id="formats" class="formats"></div>
+        <label class="switch"><input type="checkbox" id="autosave" checked><span>Autosave while recording</span></label>
+        <div class="row">
+          <button id="saveBtn" class="btn" type="button">Save now <kbd>Ctrl S</kbd></button>
+          <button id="newBtn" class="btn ghost" type="button">New session</button>
+        </div>
+        <p id="saveStatus" class="muted small" role="status"></p>
+      </section>
+
+      <section class="card">
+        <div class="card-head"><h2>In this folder</h2><button id="refreshBtn" class="icon-btn small" type="button" aria-label="Refresh list">↻</button></div>
+        <ul id="files" class="files"><li class="muted small">No folder chosen yet.</li></ul>
+      </section>
+    </aside>
+  </main>
+
+  <footer class="dock">
+    <button id="recBtn" class="rec" type="button" aria-pressed="false" aria-label="Start recording">
+      <span class="rec-core"></span>
+    </button>
+    <div class="dock-mid">
+      <div class="timer" id="timer">00:00:00</div>
+      <div class="meter" aria-hidden="true"><span id="level"></span></div>
+    </div>
+    <label class="lang">
+      <span class="sr-only">Language</span>
+      <select id="lang"></select>
+    </label>
+  </footer>
+</body>
+</html>
