@@ -169,7 +169,7 @@ async function startTab() {
   recognizer = tab;
   runStart = performance.now();
   const ok = await tab.start();
-  if (!ok) { recognizer = null; setRecUI(false); return; }
+  if (!ok || recognizer !== tab) { if (recognizer === tab) recognizer = null; setRecUI(false); return; }
   captureBase = elapsedBefore;
   runStart = performance.now();
   setRecUI(true);

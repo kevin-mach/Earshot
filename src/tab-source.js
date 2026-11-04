@@ -87,11 +87,14 @@ export class TabTranscriber extends EventTarget {
     }
 
     // 3. Pipe audio at 16 kHz into the chunker.
-    this.ctx = new AudioContext({ sampleRate: 16000 });
-    await this.ctx.resume().catch(() => {});
+    // stop() can run while we await below (e.g. the model fails to load, or the
+    // user stops sharing instantly); bail out instead of reviving a dead session.
+    const ctx = this.ctx = new AudioContext({ sampleRate: 16000 });
+    await ctx.resume().catch(() => {});
     const url = URL.createObjectURL(new Blob([WORKLET], { type: 'text/javascript' }));
-    await this.ctx.audioWorklet.addModule(url);
+    try { await ctx.audioWorklet.addModule(url); } catch (err) { if (this.wanted) throw err; }
     URL.revokeObjectURL(url);
+    if (!this.wanted || this.ctx !== ctx) { if (ctx.state !== 'closed') ctx.close().catch(() => {}); return false; }
     const src = this.ctx.createMediaStreamSource(new MediaStream([track]));
     this.tap = new AudioWorkletNode(this.ctx, 'earshot-tap');
     const mute = this.ctx.createGain(); mute.gain.value = 0;   // keep the graph pulling without double playback

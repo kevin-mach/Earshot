@@ -137,12 +137,16 @@ test('sharing without audio explains how to turn tab audio on', async () => {
 
 test('a failed model download stops recording with a clear message', async () => {
   const { ctx, page, errors } = await open({}, FAILING_WORKER);
+  // Make audio setup slow so the model error always lands mid-start (a race seen on fast CI machines).
+  await page.evaluate(() => { const orig = AudioWorklet.prototype.addModule; AudioWorklet.prototype.addModule = async function (...a) { await new Promise(r => setTimeout(r, 400)); return orig.apply(this, a); }; });
   await page.click('[data-source="tab"]');
   await page.click('#recBtn');
   await page.waitForFunction(() => /couldn.t be downloaded/.test(document.getElementById('banner').textContent));
   await page.waitForFunction(() => document.getElementById('recBtn').getAttribute('aria-pressed') === 'false' && !window.__earshot.draining);
   assert.match(await page.textContent('#modelStatus'), /retry/);
   assert.equal(await page.isDisabled('#recBtn'), false);
+  await page.waitForTimeout(800);   // and it must stay stopped once the slow setup finishes
+  assert.equal(await page.getAttribute('#recBtn', 'aria-pressed'), 'false', 'must not revive after setup completes');
   assert.deepEqual(errors, []);
   await ctx.close();
 });
