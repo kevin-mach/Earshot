@@ -2,6 +2,10 @@
 
 Earshot is a tiny, dependency-free web app that turns speech into text **as you talk** and writes the transcript **straight into a folder on your computer**: no accounts, no uploads to a server I run, no build step.
 
+**▶ Live demo: [kevin-mach.github.io/Earshot](https://kevin-mach.github.io/Earshot/)** (best in Chrome or Edge)
+
+[![CI](https://github.com/kevin-mach/Earshot/actions/workflows/ci.yml/badge.svg)](https://github.com/kevin-mach/Earshot/actions/workflows/ci.yml)
+
 ![Earshot in light mode](docs/screenshot-light.png)
 
 <p align="center"><img src="docs/screenshot-dark.png" width="72%" alt="Dark mode"> <img src="docs/screenshot-mobile.png" width="22%" alt="Mobile layout"></p>
