@@ -21,8 +21,8 @@ Earshot is a tiny, dependency-free web app that turns speech into text **as you 
 ## Quick start
 
 ```bash
-git clone https://github.com/kevin-mach/earshot.git
-cd earshot
+git clone https://github.com/kevin-mach/Earshot.git
+cd Earshot
 npm start          # serves on http://localhost:5173
 ```
 
