@@ -137,3 +137,10 @@ kbd { font: 11px var(--mono); padding: 1px 5px; border: 1px solid var(--line); b
   .seg { order: 3; }
   .lang { order: 4; margin-left: auto; }
 }
+
+/* meeting mode speaker tags */
+.transcript .body { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.transcript .body .text { flex: 1; min-width: 0; }
+.who { flex: none; min-width: 52px; text-align: center; font: 600 11px/1.9 var(--mono); text-transform: uppercase; letter-spacing: .04em; padding: 0 7px; border-radius: 6px; }
+.who-you { background: color-mix(in srgb, var(--accent) 16%, transparent); color: color-mix(in srgb, var(--accent) 80%, var(--ink)); }
+.who-them { background: color-mix(in srgb, #3b82f6 16%, transparent); color: color-mix(in srgb, #3b82f6 75%, var(--ink)); }

@@ -1,7 +1,7 @@
 import { LiveRecognizer, isSupported } from './recognizer.js';
 import { TabTranscriber, canCaptureTab, MODELS } from './tab-source.js';
 import * as store from './storage.js';
-import { FORMATS, baseName, clock, tidy, wordCount } from './format.js';
+import { FORMATS, baseName, clock, tidy, wordCount, isEcho } from './format.js';
 
 const $ = (id) => document.getElementById(id);
 const el = {
@@ -42,10 +42,12 @@ let tick = null;
 let audio = null;             // { ctx, stream, raf }
 let saveTimer = null;
 let dirty = false;
-let source = prefs.get('source', 'mic');   // 'mic' | 'tab'
+let source = prefs.get('source', 'mic');   // 'mic' | 'tab' | 'meeting'
+const usesWhisper = (s = source) => s === 'tab' || s === 'meeting';
 let tab = null;               // TabTranscriber (kept between runs so the model stays loaded)
 let captureBase = 0;          // session offset when the current tab capture began
 let draining = false;
+let echoes = 0;                // echo lines dropped this session (meeting mode)
 
 function freshSession() {
   return { id: crypto.randomUUID(), startedAt: new Date().toISOString(), lang: prefs.get('lang', navigator.language || 'en-US'), title: '', segments: [] };
@@ -53,7 +55,7 @@ function freshSession() {
 const recording = () => Boolean(recognizer?.wanted);
 const ERRORS = {
   'share-cancelled': 'Sharing was cancelled. Press record and pick the tab that\'s playing your video.',
-  'no-audio': 'No audio came with that share. Press record again, pick a Chrome tab, and make sure "Also share tab audio" is switched on.',
+  'no-audio': 'No audio came with that share. Press record again, choose the "Chrome Tab" option, pick the tab, and make sure "Also share tab audio" is switched on.',
   'capture-failed': 'Couldn\'t capture that tab\'s audio.',
 };
 const now = () => elapsedBefore + (recording() ? performance.now() - runStart : 0);
@@ -63,9 +65,15 @@ function renderSegment(seg, i, fresh = false) {
   const li = document.createElement('li');
   li.dataset.i = i;
   if (fresh) li.className = 'fresh';
-  li.innerHTML = `<time></time><div class="text" contenteditable="plaintext-only" spellcheck="true"></div><button class="del" type="button" aria-label="Delete line" title="Delete line">×</button>`;
+  li.innerHTML = `<time></time><div class="body"><div class="text" contenteditable="plaintext-only" spellcheck="true"></div></div><button class="del" type="button" aria-label="Delete line" title="Delete line">×</button>`;
   li.querySelector('time').textContent = clock(seg.start);
   li.querySelector('.text').textContent = seg.text;
+  if (seg.speaker) {
+    const who = document.createElement('span');
+    who.className = `who who-${seg.speaker.toLowerCase()}`;
+    who.textContent = seg.speaker;
+    li.querySelector('.body').prepend(who);
+  }
   return li;
 }
 
@@ -114,8 +122,29 @@ function addFinal(text, timing) {
   if (timing) seg = { start: Math.round(captureBase + timing.startMs), end: Math.round(captureBase + timing.endMs), text: t };
   else { const end = now(); seg = { start: utterStart ?? Math.max(0, end - 1500), end, text: t }; }
   utterStart = null;
-  session.segments.push(seg);
-  el.list.append(renderSegment(seg, session.segments.length - 1, true));
+  if (timing?.speaker) seg.speaker = timing.speaker;
+
+  // Meeting mode on speakers: your mic re-hears the call. Keep the call's copy only.
+  let rerender = false;
+  if (seg.speaker) {
+    const near = session.segments.filter(x => x.speaker && x.speaker !== seg.speaker && Math.abs(x.start - seg.start) < 20000);
+    if (seg.speaker === 'You' && near.some(x => isEcho(seg, x))) { echoes++; return; }
+    if (seg.speaker === 'Them') {
+      const dupes = near.filter(x => isEcho(x, seg));
+      if (dupes.length) { session.segments = session.segments.filter(x => !dupes.includes(x)); echoes += dupes.length; rerender = true; }
+    }
+  }
+
+  // Two lanes finish out of order, so insert by start time.
+  let at = session.segments.findIndex(x => x.start > seg.start);
+  if (at === -1) at = session.segments.length;
+  session.segments.splice(at, 0, seg);
+  if (rerender || at < session.segments.length - 1) {
+    renderAll();
+    el.list.children[at]?.classList.add('fresh');
+  } else {
+    el.list.append(renderSegment(seg, at, true));
+  }
   scrollToEnd();
   changed();
 }
@@ -127,20 +156,21 @@ async function startRecording() {
   if (!session.segments.length && elapsedBefore === 0) session.startedAt = new Date().toISOString();
   session.lang = el.lang.value;
   session.source = source;
-  return source === 'tab' ? startTab() : startMic();
+  return usesWhisper() ? startTab() : startMic();
 }
 
 function wireCommon(r) {
+  const whisper = r instanceof TabTranscriber;
   r.addEventListener('final', (e) => {
-    if (source !== 'tab') el.interim.textContent = '';
-    addFinal(e.detail.text, source === 'tab' ? e.detail : null);
+    if (!whisper) el.interim.textContent = '';
+    addFinal(e.detail.text, whisper ? e.detail : null);
   });
 }
 
 function setRecUI(on) {
   el.rec.setAttribute('aria-pressed', String(on));
   el.rec.setAttribute('aria-label', on ? 'Stop recording' : 'Start recording');
-  el.sourceBtns.forEach(b => (b.disabled = on || draining || (b.dataset.source === 'mic' ? !isSupported() : !canCaptureTab())));
+  el.sourceBtns.forEach(b => (b.disabled = on || draining || !sourceAvailable(b.dataset.source)));
   clearInterval(tick);
   if (on) tick = setInterval(setTimer, 250);
   updateStats();
@@ -148,9 +178,10 @@ function setRecUI(on) {
 
 async function startTab() {
   if (!canCaptureTab()) { banner('This browser can\'t capture tab audio. Use Chrome or Edge on a desktop.'); return; }
+  const meeting = source === 'meeting';
   if (!tab || tab.modelSize !== el.model.value) {
     tab?.dispose();
-    tab = new TabTranscriber({ model: el.model.value, lang: el.lang.value });
+    tab = new TabTranscriber({ model: el.model.value, lang: el.lang.value, meeting });
     wireCommon(tab);
     tab.addEventListener('interim', (e) => { el.interim.textContent = e.detail; });
     tab.addEventListener('level', (e) => { el.level.style.width = Math.min(100, e.detail * 320) + '%'; });
@@ -164,8 +195,12 @@ async function startTab() {
       banner(ERRORS[e.detail] || `Tab transcription error: ${e.detail}`);
     });
     tab.addEventListener('ended', () => { banner('Tab sharing ended. Finishing the last few lines…'); stopRecording(); });
+    tab.addEventListener('warning', (e) => {
+      if (e.detail === 'mic-unavailable') banner('Couldn\'t use your microphone, so only the other people are being transcribed. Allow the mic in the address bar, then stop and record again to include yourself.');
+    });
   }
   tab.lang = el.lang.value;
+  tab.meeting = meeting;   // the loaded model is reused across Tab and Meeting modes
   recognizer = tab;
   runStart = performance.now();
   const ok = await tab.start();
@@ -293,7 +328,7 @@ function newSession() {
   if (dirty && session.segments.length && !confirm('This session has unsaved changes. Start a new one anyway?')) return;
   session = freshSession();
   session.lang = el.lang.value;
-  elapsedBefore = 0; utterStart = null; dirty = false;
+  elapsedBefore = 0; utterStart = null; dirty = false; echoes = 0;
   setTimer(); renderAll(); persistDraft(); status('');
   el.title.focus();
 }
@@ -388,15 +423,19 @@ function paintModel(p) {
   }
 }
 
+function sourceAvailable(s) { return s === 'mic' ? isSupported() : canCaptureTab(); }
+
 function setSource(next) {
   if (recording() || draining) return;
   source = next;
   prefs.set('source', source);
   el.sourceBtns.forEach(b => b.setAttribute('aria-pressed', String(b.dataset.source === source)));
-  el.engineCard.hidden = source !== 'tab';
-  el.emptyHint.innerHTML = source === 'tab'
-    ? 'Press record, pick the tab playing your video, and keep <b>“Also share tab audio”</b> on. Lines appear a few seconds behind the video and autosave to your folder.'
-    : 'Lines appear here as you speak. Click any line to fix it. Everything autosaves to your folder.';
+  el.engineCard.hidden = !usesWhisper();
+  el.emptyHint.innerHTML = {
+    tab: 'Press record, pick the tab playing your video, and keep <b>“Also share tab audio”</b> on. Lines appear a few seconds behind the video and autosave to your folder.',
+    meeting: 'Join your call in a browser tab and <b>wear headphones</b>. Press record, pick the call\'s tab with <b>“Also share tab audio”</b> on, then allow the microphone. Lines are tagged <b>You</b> or <b>Them</b>.',
+    mic: 'Lines appear here as you speak. Click any line to fix it. Everything autosaves to your folder.',
+  }[source];
 }
 
 function setupSource() {
@@ -404,10 +443,12 @@ function setupSource() {
   el.model.value = prefs.get('model', 'base');
   el.model.addEventListener('change', () => { prefs.set('model', el.model.value); paintModel(); });
   el.sourceBtns.forEach(b => b.addEventListener('click', () => setSource(b.dataset.source)));
-  const micBtn = document.querySelector('[data-source="mic"]'), tabBtn = document.querySelector('[data-source="tab"]');
-  if (!canCaptureTab()) { tabBtn.disabled = true; tabBtn.title = 'Tab audio capture needs Chrome or Edge on a desktop.'; }
-  if (!isSupported()) { micBtn.disabled = true; micBtn.title = 'This browser has no built-in speech recognition.'; }
-  setSource(!canCaptureTab() ? 'mic' : !isSupported() ? 'tab' : source);
+  for (const b of el.sourceBtns) {
+    if (sourceAvailable(b.dataset.source)) continue;
+    b.disabled = true;
+    b.title = b.dataset.source === 'mic' ? 'This browser has no built-in speech recognition.' : 'Tab audio capture needs Chrome or Edge on a desktop.';
+  }
+  setSource(sourceAvailable(source) ? source : canCaptureTab() ? 'tab' : 'mic');
   paintModel();
 }
 
@@ -475,7 +516,7 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Test hook — lets the browser test inspect state without reaching into closures.
-  window.__earshot = { get session() { return session; }, save, toggle, get folderOk() { return folderOk; }, get draining() { return draining; } };
+  window.__earshot = { get session() { return session; }, save, toggle, get folderOk() { return folderOk; }, get draining() { return draining; }, get echoes() { return echoes; } };
 }
 
 init();

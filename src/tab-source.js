@@ -1,6 +1,8 @@
 // Captures the audio of a browser tab (or the whole screen) and transcribes it
-// with on-device Whisper. Emits the same events as LiveRecognizer:
-//   state, interim, final {text, startMs, endMs}, error, plus level, progress, ended.
+// with on-device Whisper. In meeting mode it also records the microphone as a
+// second lane, so lines are labelled "Them" (the call) or "You" (your mic).
+// Emits the same events as LiveRecognizer:
+//   state, interim, final {text, startMs, endMs, speaker?}, error, plus level, progress, ended, warning.
 import { Chunker } from './chunker.js';
 import { cleanWhisper } from './format.js';
 
@@ -31,9 +33,10 @@ class Tap extends AudioWorkletProcessor {
 registerProcessor('earshot-tap', Tap);`;
 
 export class TabTranscriber extends EventTarget {
-  constructor({ model = 'base', lang = 'en-US', workerUrl = new URL('./whisper-worker.js', import.meta.url) } = {}) {
+  constructor({ model = 'base', lang = 'en-US', meeting = false, workerUrl = new URL('./whisper-worker.js', import.meta.url) } = {}) {
     super();
-    Object.assign(this, { modelSize: model, lang, workerUrl });
+    Object.assign(this, { modelSize: model, lang, meeting, workerUrl });
+    this.lanes = [];
     this.wanted = false;
     this.nextId = 0;
     this.inflight = new Map();   // id -> chunk timing
@@ -95,27 +98,48 @@ export class TabTranscriber extends EventTarget {
     try { await ctx.audioWorklet.addModule(url); } catch (err) { if (this.wanted) throw err; }
     URL.revokeObjectURL(url);
     if (!this.wanted || this.ctx !== ctx) { if (ctx.state !== 'closed') ctx.close().catch(() => {}); return false; }
-    const src = this.ctx.createMediaStreamSource(new MediaStream([track]));
-    this.tap = new AudioWorkletNode(this.ctx, 'earshot-tap');
-    const mute = this.ctx.createGain(); mute.gain.value = 0;   // keep the graph pulling without double playback
-    src.connect(this.tap).connect(mute).connect(this.ctx.destination);
-    this.chunker = new Chunker({ sampleRate: this.ctx.sampleRate });
-    this.tap.port.onmessage = (e) => this.#onAudio(e.data);
+    this.t0 = performance.now();
+    this.#addLane(track, this.meeting ? 'Them' : null);
+
+    // 4. Meeting mode: add your microphone as a second, separately transcribed lane.
+    if (this.meeting) {
+      try {
+        const mic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+        if (!this.wanted || this.ctx !== ctx) { mic.getTracks().forEach(t => t.stop()); return false; }
+        this.micStream = mic;
+        this.#addLane(mic.getAudioTracks()[0], 'You');
+      } catch (err) {
+        if (!this.wanted) return false;
+        this.#emit('warning', 'mic-unavailable');
+      }
+    }
 
     this.#emit('state', 'listening');
     this.#status();
     return true;
   }
 
-  #onAudio(samples) {
-    let s = 0; for (let i = 0; i < samples.length; i++) s += samples[i] * samples[i];
-    this.#emit('level', Math.sqrt(s / samples.length));
-    for (const c of this.chunker.push(samples)) this.#send(c);
+  #addLane(track, speaker) {
+    const src = this.ctx.createMediaStreamSource(new MediaStream([track]));
+    const tap = new AudioWorkletNode(this.ctx, 'earshot-tap');
+    const mute = this.ctx.createGain(); mute.gain.value = 0;   // keep the graph pulling without double playback
+    src.connect(tap).connect(mute).connect(this.ctx.destination);
+    // Lanes can start a moment apart; offset keeps both on the same clock.
+    const lane = { speaker, tap, level: 0, offsetMs: performance.now() - this.t0, chunker: new Chunker({ sampleRate: this.ctx.sampleRate }) };
+    tap.port.onmessage = (e) => this.#onAudio(lane, e.data);
+    this.lanes.push(lane);
   }
 
-  #send(chunk) {
+  #onAudio(lane, samples) {
+    let s = 0; for (let i = 0; i < samples.length; i++) s += samples[i] * samples[i];
+    lane.level = Math.sqrt(s / samples.length);
+    this.#emit('level', Math.max(...this.lanes.map(l => l.level)));
+    for (const c of lane.chunker.push(samples)) this.#send(c, lane);
+  }
+
+  #send(chunk, lane) {
     const id = ++this.nextId;
-    this.inflight.set(id, { startMs: chunk.startMs, endMs: chunk.endMs });
+    this.inflight.set(id, { startMs: chunk.startMs + lane.offsetMs, endMs: chunk.endMs + lane.offsetMs, ...(lane.speaker ? { speaker: lane.speaker } : {}) });
     if (!this.worker) { this.inflight.delete(id); return; }
     this.worker.postMessage({ type: 'transcribe', id, audio: chunk.audio, language: this.code, multilingual: this.multilingual }, [chunk.audio.buffer]);
     this.#status();
@@ -148,19 +172,21 @@ export class TabTranscriber extends EventTarget {
     if (!this.wanted && !this.inflight.size) return this.#emit('interim', '');
     const parts = [];
     if (!this.ready) parts.push('Loading speech model…');
-    else if (this.wanted) parts.push('Listening to tab audio…');
+    else if (this.wanted) parts.push(this.meeting ? (this.lanes.length > 1 ? 'Listening to the call and your mic…' : 'Listening to the call (no mic)…') : 'Listening to tab audio…');
     if (this.inflight.size) parts.push(`transcribing ${this.inflight.size} clip${this.inflight.size > 1 ? 's' : ''}`);
     this.#emit('interim', parts.join(' · '));
   }
 
   /** Stop capturing; resolves once already-captured audio has been transcribed. */
   async stop() {
-    if (!this.wanted && !this.stream) return;
+    if (!this.wanted && !this.stream && !this.micStream) return;
     this.wanted = false;
-    if (this.chunker) for (const c of this.chunker.flush()) this.#send(c);
+    for (const lane of this.lanes) for (const c of lane.chunker.flush()) this.#send(c, lane);
     this.stream?.getTracks().forEach(t => t.stop());
-    this.stream = null;
-    try { this.tap?.disconnect(); await this.ctx?.close(); } catch {}
+    this.micStream?.getTracks().forEach(t => t.stop());
+    this.stream = this.micStream = null;
+    try { this.lanes.forEach(l => l.tap.disconnect()); await this.ctx?.close(); } catch {}
+    this.lanes = [];
     this.ctx = null;
     if (this.inflight.size) await new Promise(r => this.drainWaiters.push(r));
     this.#emit('interim', '');

@@ -1,6 +1,6 @@
 // Pure formatting helpers — no DOM access, so they run in Node tests too.
 
-/** @typedef {{ start: number, end: number, text: string }} Segment  (ms offsets from session start) */
+/** @typedef {{ start: number, end: number, text: string, speaker?: string }} Segment  (ms offsets from session start) */
 /** @typedef {{ id: string, startedAt: string, lang: string, title?: string, segments: Segment[] }} Session */
 
 const pad = (n, w = 2) => String(Math.floor(n)).padStart(w, '0');
@@ -59,8 +59,10 @@ export function duration(session) {
   return last ? last.end : 0;
 }
 
+const said = (s) => (s.speaker ? `${s.speaker}: ${s.text}` : s.text);
+
 export function toText(session) {
-  return session.segments.map(s => s.text).join('\n') + (session.segments.length ? '\n' : '');
+  return session.segments.map(said).join('\n') + (session.segments.length ? '\n' : '');
 }
 
 export function toMarkdown(session) {
@@ -76,19 +78,19 @@ export function toMarkdown(session) {
     '---',
     '',
   ];
-  const body = session.segments.map(s => `**[${clock(s.start)}]** ${s.text}\n`);
+  const body = session.segments.map(s => `**[${clock(s.start)}]${s.speaker ? ' ' + s.speaker + ':' : ''}** ${s.text}\n`);
   return head.concat(body).join('\n');
 }
 
 export function toSrt(session) {
   return session.segments
-    .map((s, i) => `${i + 1}\n${srtTime(s.start)} --> ${srtTime(Math.max(s.end, s.start + 500))}\n${s.text}\n`)
+    .map((s, i) => `${i + 1}\n${srtTime(s.start)} --> ${srtTime(Math.max(s.end, s.start + 500))}\n${said(s)}\n`)
     .join('\n');
 }
 
 export function toVtt(session) {
   return 'WEBVTT\n\n' + session.segments
-    .map(s => `${vttTime(s.start)} --> ${vttTime(Math.max(s.end, s.start + 500))}\n${s.text}\n`)
+    .map(s => `${vttTime(s.start)} --> ${vttTime(Math.max(s.end, s.start + 500))}\n${s.speaker ? `<v ${s.speaker}>` : ''}${s.text}\n`)
     .join('\n');
 }
 
@@ -124,4 +126,27 @@ export function cleanWhisper(text) {
   // Collapse a phrase stuck on repeat ("I'm I'm I'm I'm ..."), a classic Whisper failure.
   t = t.replace(/\b(.{2,40}?)(?:[\s,.]+\1\b){3,}/gi, '$1');
   return tidy(t);
+}
+
+/**
+ * Word-overlap similarity (0–1) used to spot echo in meeting mode: when you're on
+ * speakers, your mic re-hears the call and Whisper transcribes it twice.
+ */
+export function similarity(a, b) {
+  const words = (t) => String(t).toLowerCase().replace(/[^\p{L}\p{N}\s']/gu, ' ').split(/\s+/).filter(Boolean);
+  const A = words(a), B = words(b);
+  if (!A.length || !B.length) return 0;
+  const pool = new Map();
+  for (const w of B) pool.set(w, (pool.get(w) || 0) + 1);
+  let hit = 0;
+  for (const w of A) if (pool.get(w) > 0) { hit++; pool.set(w, pool.get(w) - 1); }
+  return hit / Math.min(A.length, B.length);
+}
+
+/** True when a "You" line is just the call's audio leaking into the mic. */
+export function isEcho(mine, theirs, { windowMs = 4000, threshold = 0.6 } = {}) {
+  if (!mine || !theirs) return false;
+  const overlap = mine.start < theirs.end + windowMs && theirs.start < mine.end + windowMs;
+  const shortest = Math.min(mine.text.split(/\s+/).length, theirs.text.split(/\s+/).length);
+  return overlap && shortest >= 3 && similarity(mine.text, theirs.text) >= threshold;
 }

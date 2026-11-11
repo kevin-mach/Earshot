@@ -131,3 +131,37 @@ test('modelFor picks English-only checkpoints for English', () => {
   assert.deepEqual(modelFor('tiny', 'fr-FR'), { id: 'Xenova/whisper-tiny', multilingual: true, code: 'fr' });
   assert.equal(modelFor('nope', 'de-DE').id, 'Xenova/whisper-base');
 });
+
+// ---------- meeting mode: speaker labels + echo detection ----------
+import { similarity, isEcho } from '../src/format.js';
+
+const meeting = {
+  id: 'm', startedAt: new Date(2026, 10, 11, 14, 0, 0).toISOString(), lang: 'en-US', title: 'Standup',
+  segments: [
+    { start: 1000, end: 3000, text: 'Can you walk us through the timeline?', speaker: 'Them' },
+    { start: 3500, end: 6000, text: 'Sure, end of the month.', speaker: 'You' },
+  ],
+};
+
+test('exports label each line with its speaker', () => {
+  assert.equal(toText(meeting), 'Them: Can you walk us through the timeline?\nYou: Sure, end of the month.\n');
+  assert.match(toMarkdown(meeting), /\*\*\[00:00:03\] You:\*\* Sure, end of the month\./);
+  assert.match(toSrt(meeting), /00:00:01,000 --> 00:00:03,000\nThem: Can you walk/);
+  assert.match(toVtt(meeting), /\n<v You>Sure, end of the month\.\n/);
+  assert.equal(JSON.parse(toJSON(meeting)).segments[1].speaker, 'You');
+});
+
+test('similarity measures word overlap, ignoring case and punctuation', () => {
+  assert.equal(similarity('Hello there, everyone!', 'hello there everyone'), 1);
+  assert.equal(similarity('the plan is ready', 'totally unrelated words'), 0);
+  assert.ok(similarity('we ship it on friday', 'so we ship on friday then') >= 0.8);
+  assert.equal(similarity('', 'x'), 0);
+});
+
+test('isEcho flags the mic re-hearing the call, not genuine replies', () => {
+  const them = { start: 10000, end: 13000, text: 'Let us move the launch to next Tuesday.' };
+  assert.equal(isEcho({ start: 10400, end: 13500, text: 'let us move the launch to next Tuesday' }, them), true);
+  assert.equal(isEcho({ start: 13500, end: 15000, text: 'Tuesday works for me, sounds good.' }, them), false);
+  assert.equal(isEcho({ start: 60000, end: 62000, text: 'Let us move the launch to next Tuesday.' }, them), false, 'far apart in time');
+  assert.equal(isEcho({ start: 10000, end: 11000, text: 'Okay.' }, { ...them, text: 'Okay.' }), false, 'too short to judge');
+});

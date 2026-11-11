@@ -43,7 +43,7 @@
 
     <aside class="side">
       <section class="card" id="engineCard" hidden>
-        <h2>Tab audio engine</h2>
+        <h2>On-device engine</h2>
         <label class="field"><span>Whisper model</span><select id="model"></select></label>
         <progress id="modelBar" max="100" value="0" hidden></progress>
         <p id="modelStatus" class="muted small"></p>
@@ -74,6 +74,7 @@
     <div class="seg" role="group" aria-label="Audio source">
       <button type="button" data-source="mic" aria-pressed="true">🎤 Mic</button>
       <button type="button" data-source="tab" aria-pressed="false">🖥️ Tab audio</button>
+      <button type="button" data-source="meeting" aria-pressed="false" title="Transcribe a video call: the call's tab plus your microphone">👥 Meeting</button>
     </div>
     <div class="dock-mid">
       <div class="timer" id="timer">00:00:00</div>

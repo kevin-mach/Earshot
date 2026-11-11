@@ -14,6 +14,7 @@ Earshot is a tiny, dependency-free web app that turns speech into text **live**,
 
 - **Transcribe any video or tab.** Switch to **Tab audio**, pick the tab playing a YouTube video, lecture, podcast or meeting, and Earshot captures its sound directly. You keep hearing it normally. Speech is recognised **on-device** by [Whisper](https://github.com/openai/whisper) running in the browser via [transformers.js](https://github.com/huggingface/transformers.js) on WebGPU (or WebAssembly), so the audio never leaves your computer.
 - **Live transcription** with in-progress (interim) text shown in italics as you speak, then committed as timestamped lines.
+- **Meeting mode for video calls.** Transcribes a Google Meet, Zoom or Teams call running in a browser tab *and* your microphone at the same time, labelling every line **You** or **Them**. If you're on speakers and your mic re-hears the call, the duplicate lines are dropped automatically.
 - **Saves to a real local folder.** Pick any folder once; Earshot remembers it and autosaves every line using the [File System Access API](https://developer.mozilla.org/docs/Web/API/File_System_API). Browsers without it fall back to normal downloads.
 - **Five export formats:** Markdown (with a metadata header), plain text, SRT and WebVTT subtitles, and JSON.
 - **Edit in place.** Click any line to fix a mis-hearing, or delete it. Edits autosave too.
@@ -49,9 +50,23 @@ Files are named like `transcript-2026-11-04_10-13-05-weekly-product-sync.md`, us
 
 The first time, the Whisper model downloads once (base model: about 80 MB on CPU, about 290 MB on GPU) and is then cached for offline use. Pick **Fast (tiny)** for slower laptops, or **Accurate (small)** for difficult audio. English uses the English-only checkpoint, and other languages use the multilingual one.
 
+## Transcribing a video call (Meeting mode)
+
+1. Join the call **in your browser** (Meet, Zoom web client, or Teams on the web) and **put on headphones**.
+2. In Earshot, choose your folder, switch the dock to **👥 Meeting**, and press record.
+3. In Chrome's share dialog, choose **Chrome Tab**, pick the call's tab, keep **"Also share tab audio"** on, and click Share.
+4. Allow the microphone when asked.
+5. Talk normally. Each line is tagged **You** or **Them** and autosaves. Exports keep the labels (`You: …` in text, `<v You>` voice tags in WebVTT).
+
+![Meeting mode with You / Them labels](docs/screenshot-meeting.png)
+
+How it works: the call's audio and your mic run as two independent lanes, each with its own pause detection, feeding one on-device Whisper model. Lines are merged by start time, and a "You" line that is a near-copy of a "Them" line from the same moment is treated as echo and dropped. "Them" is everyone else on the call combined; individual remote speakers aren't separated.
+
+> Let the other participants know you're transcribing. In many places, recording a call requires everyone's consent.
+
 ## Browser support
 
-| | Mic transcription | Tab / video audio | Save to chosen folder |
+| | Mic transcription | Tab / video audio & Meeting mode | Save to chosen folder |
 |---|---|---|---|
 | Chrome / Edge (desktop) | ✅ | ✅ | ✅ |
 | Safari (macOS) | ✅ | ❌ (no tab audio capture) | ⬇️ downloads instead |
@@ -67,7 +82,7 @@ index.html
 src/
   app.js         UI controller: session state, timing, autosave, editing, shortcuts
   recognizer.js  Mic source: Web Speech API wrapper with auto-restart + typed events
-  tab-source.js  Tab source: getDisplayMedia → AudioWorklet (16 kHz) → chunker → Whisper worker
+  tab-source.js  Tab & Meeting sources: getDisplayMedia (+ mic lane) → AudioWorklet (16 kHz) → chunker → Whisper worker
   chunker.js     Energy-based pause detection that cuts the stream into utterances
   whisper-worker.js  On-device Whisper (transformers.js, WebGPU → WASM fallback)
   storage.js     Folder handle persisted in IndexedDB, permission checks, writes, download fallback
