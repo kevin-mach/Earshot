@@ -144,3 +144,9 @@ kbd { font: 11px var(--mono); padding: 1px 5px; border: 1px solid var(--line); b
 .who { flex: none; min-width: 52px; text-align: center; font: 600 11px/1.9 var(--mono); text-transform: uppercase; letter-spacing: .04em; padding: 0 7px; border-radius: 6px; }
 .who-you { background: color-mix(in srgb, var(--accent) 16%, transparent); color: color-mix(in srgb, var(--accent) 80%, var(--ink)); }
 .who-them { background: color-mix(in srgb, #3b82f6 16%, transparent); color: color-mix(in srgb, #3b82f6 75%, var(--ink)); }
+
+/* live audio check */
+.diag { display: flex; flex-direction: column; gap: 2px; margin: 8px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--bg); font: 12px/1.6 var(--mono); color: var(--muted); }
+.diag span { display: flex; justify-content: space-between; gap: 8px; }
+.diag .bars { color: var(--accent); letter-spacing: 1px; font-weight: 400; }
+.diag[hidden] { display: none; }

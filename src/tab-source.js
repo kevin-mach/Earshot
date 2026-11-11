@@ -47,8 +47,33 @@ export class TabTranscriber extends EventTarget {
 
   get backlog() { return this.inflight.size; }
 
+  /** Never throws: any failure is cleaned up and reported as an 'error' event. */
   async start() {
+    try {
+      return await this.#start();
+    } catch (err) {
+      const wasWanted = this.wanted;
+      this.wanted = false;
+      this.#teardown();
+      if (wasWanted) this.#emit('error', `start-failed: ${err?.name || 'Error'}: ${err?.message || err}`);
+      return false;
+    }
+  }
+
+  #teardown() {
+    clearInterval(this.diagTimer); this.diagTimer = null;
+    this.stream?.getTracks().forEach(t => t.stop());
+    this.micStream?.getTracks().forEach(t => t.stop());
+    this.stream = this.micStream = null;
+    try { this.lanes.forEach(l => l.tap.disconnect()); } catch {}
+    this.lanes = [];
+    if (this.ctx && this.ctx.state !== 'closed') this.ctx.close().catch(() => {});
+    this.ctx = null;
+  }
+
+  async #start() {
     this.wanted = true;
+    this.sent = 0; this.done = 0; this.silentWarned = false;
     this.#emit('state', 'starting');
 
     // 1. Ask the user to share a tab. Chrome requires video in the request; we ignore it.
@@ -114,9 +139,26 @@ export class TabTranscriber extends EventTarget {
       }
     }
 
+    // Live audio check: lets the UI show what each lane is actually receiving,
+    // and warns when a share arrives with a track but no sound in it.
+    this.diagTimer = setInterval(() => this.#diag(), 500);
     this.#emit('state', 'listening');
     this.#status();
     return true;
+  }
+
+  #diag() {
+    const lanes = this.lanes.map(l => {
+      const out = { speaker: l.speaker || 'Tab', label: l.label, level: l.recent, peak: l.peak };
+      l.recent = 0;
+      return out;
+    });
+    this.#emit('diag', { lanes, sent: this.sent, done: this.done, ready: !!this.ready });
+    const call = this.lanes[0];
+    if (call && !this.silentWarned && performance.now() - this.t0 > 6000 && call.peak < 0.0005) {
+      this.silentWarned = true;
+      this.#emit('warning', 'silent-call');
+    }
   }
 
   #addLane(track, speaker) {
@@ -125,7 +167,7 @@ export class TabTranscriber extends EventTarget {
     const mute = this.ctx.createGain(); mute.gain.value = 0;   // keep the graph pulling without double playback
     src.connect(tap).connect(mute).connect(this.ctx.destination);
     // Lanes can start a moment apart; offset keeps both on the same clock.
-    const lane = { speaker, tap, level: 0, offsetMs: performance.now() - this.t0, chunker: new Chunker({ sampleRate: this.ctx.sampleRate }) };
+    const lane = { speaker, tap, level: 0, recent: 0, peak: 0, label: track.label || '', offsetMs: performance.now() - this.t0, chunker: new Chunker({ sampleRate: this.ctx.sampleRate }) };
     tap.port.onmessage = (e) => this.#onAudio(lane, e.data);
     this.lanes.push(lane);
   }
@@ -133,11 +175,15 @@ export class TabTranscriber extends EventTarget {
   #onAudio(lane, samples) {
     let s = 0; for (let i = 0; i < samples.length; i++) s += samples[i] * samples[i];
     lane.level = Math.sqrt(s / samples.length);
+    lane.recent = Math.max(lane.recent, lane.level);
+    lane.peak = Math.max(lane.peak, lane.level);
     this.#emit('level', Math.max(...this.lanes.map(l => l.level)));
     for (const c of lane.chunker.push(samples)) this.#send(c, lane);
   }
 
   #send(chunk, lane) {
+    normalize(chunk.audio);
+    this.sent++;
     const id = ++this.nextId;
     this.inflight.set(id, { startMs: chunk.startMs + lane.offsetMs, endMs: chunk.endMs + lane.offsetMs, ...(lane.speaker ? { speaker: lane.speaker } : {}) });
     if (!this.worker) { this.inflight.delete(id); return; }
@@ -158,6 +204,7 @@ export class TabTranscriber extends EventTarget {
     else if (m.type === 'result' || m.type === 'error') {
       const timing = this.inflight.get(m.id);
       this.inflight.delete(m.id);
+      this.done++;
       if (m.type === 'error') this.#emit('error', `model: ${m.message}`);
       else if (timing) {
         const text = cleanWhisper(m.text);
@@ -182,16 +229,21 @@ export class TabTranscriber extends EventTarget {
     if (!this.wanted && !this.stream && !this.micStream) return;
     this.wanted = false;
     for (const lane of this.lanes) for (const c of lane.chunker.flush()) this.#send(c, lane);
-    this.stream?.getTracks().forEach(t => t.stop());
-    this.micStream?.getTracks().forEach(t => t.stop());
-    this.stream = this.micStream = null;
-    try { this.lanes.forEach(l => l.tap.disconnect()); await this.ctx?.close(); } catch {}
-    this.lanes = [];
-    this.ctx = null;
+    this.#teardown();
     if (this.inflight.size) await new Promise(r => this.drainWaiters.push(r));
     this.#emit('interim', '');
     this.#emit('state', 'idle');
   }
 
   dispose() { this.worker?.terminate(); this.worker = null; }
+}
+
+/** Boost quiet clips (e.g. low system volume) toward a healthy peak; Whisper copes better. */
+export function normalize(audio, target = 0.9, maxGain = 20) {
+  let peak = 0;
+  for (let i = 0; i < audio.length; i++) { const a = Math.abs(audio[i]); if (a > peak) peak = a; }
+  if (peak <= 0 || peak >= target) return audio;
+  const g = Math.min(maxGain, target / peak);
+  for (let i = 0; i < audio.length; i++) audio[i] *= g;
+  return audio;
 }

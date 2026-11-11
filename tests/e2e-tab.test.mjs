@@ -30,7 +30,7 @@ self.onmessage = async (e) => {
   }
 };`;
 
-function fakes({ withAudio = true } = {}) {
+function fakes({ withAudio = true, silent = false } = {}) {
   window.__files = {};
   const fh = (name) => ({ kind: 'file', name, async createWritable() { let b = ''; return { write: async s => { b += s; }, close: async () => { window.__files[name] = b; } }; }, async getFile() { return { size: (window.__files[name] || '').length, lastModified: Date.now() }; } });
   const dir = { kind: 'directory', name: 'Transcripts', queryPermission: async () => 'granted', requestPermission: async () => 'granted', getFileHandle: async n => fh(n), async *entries() { for (const n of Object.keys(window.__files)) yield [n, fh(n)]; } };
@@ -44,6 +44,7 @@ function fakes({ withAudio = true } = {}) {
     const osc = ctx.createOscillator(); osc.frequency.value = 220;
     const gate = ctx.createGain(); gate.gain.value = 0;
     const t = ctx.currentTime + 0.2;
+    if (silent) { const d = ctx.createMediaStreamDestination(); osc.connect(gate).connect(d); osc.start(); return d.stream; }
     // "speech" 2.8s, pause 1s, "speech" 2.8s, pause 1s, then speech until stopped
     gate.gain.setValueAtTime(0.5, t); gate.gain.setValueAtTime(0, t + 2.8);
     gate.gain.setValueAtTime(0.5, t + 3.8); gate.gain.setValueAtTime(0, t + 6.6);
@@ -147,6 +148,52 @@ test('a failed model download stops recording with a clear message', async () =>
   assert.equal(await page.isDisabled('#recBtn'), false);
   await page.waitForTimeout(800);   // and it must stay stopped once the slow setup finishes
   assert.equal(await page.getAttribute('#recBtn', 'aria-pressed'), 'false', 'must not revive after setup completes');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('a crash while setting up capture shows the reason and leaves the app usable', async () => {
+  const { ctx, page, errors } = await open();
+  await page.evaluate(() => { window.__brokenOnce = true; const orig = AudioWorklet.prototype.addModule; AudioWorklet.prototype.addModule = function (...a) { if (window.__brokenOnce) { window.__brokenOnce = false; return Promise.reject(new DOMException('worklet blew up', 'AbortError')); } return orig.apply(this, a); }; });
+  await page.click('[data-source="tab"]');
+  await page.click('#recBtn');
+  await page.waitForFunction(() => /Couldn.t start capturing audio/.test(document.getElementById('banner').textContent));
+  assert.match(await page.textContent('#banner'), /AbortError: worklet blew up/);
+  assert.equal(await page.getAttribute('#recBtn', 'aria-pressed'), 'false');
+  // The next attempt works normally (no stuck half-started state).
+  await page.click('#recBtn');
+  await page.waitForFunction(() => document.getElementById('recBtn').getAttribute('aria-pressed') === 'true');
+  await page.waitForFunction(() => window.__earshot.session.segments.length >= 1, null, { timeout: 15000 });
+  await page.click('#recBtn');
+  await page.waitForFunction(() => !window.__earshot.draining);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('a share that carries a silent track triggers the Windows/Discord help', async () => {
+  const { ctx, page, errors } = await open({ silent: true });
+  await page.click('[data-source="tab"]');
+  await page.click('#recBtn');
+  await page.waitForFunction(() => !document.getElementById('diag').hidden);
+  assert.match(await page.textContent('#diag'), /Tab audio ▯▯▯▯▯/);
+  await page.waitForFunction(() => /hearing silence/.test(document.getElementById('banner').textContent), null, { timeout: 10000 });
+  assert.match(await page.textContent('#banner'), /Output Device to "Default"/);
+  assert.equal(await page.getAttribute('#recBtn', 'aria-pressed'), 'true', 'keeps listening in case sound starts');
+  await page.click('#recBtn');
+  await page.waitForFunction(() => !window.__earshot.draining);
+  assert.equal(await page.isHidden('#diag'), true);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('the live audio check shows sound arriving and clips being transcribed', async () => {
+  const { ctx, page, errors } = await open();
+  await page.click('[data-source="tab"]');
+  await page.click('#recBtn');
+  await page.waitForFunction(() => /Tab audio ▮▮/.test(document.getElementById('diag').textContent), null, { timeout: 5000 });
+  await page.waitForFunction(() => /[1-9]\d* transcribed/.test(document.getElementById('diag').textContent), null, { timeout: 15000 });
+  await page.click('#recBtn');
+  await page.waitForFunction(() => !window.__earshot.draining);
   assert.deepEqual(errors, []);
   await ctx.close();
 });

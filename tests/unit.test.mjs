@@ -165,3 +165,31 @@ test('isEcho flags the mic re-hearing the call, not genuine replies', () => {
   assert.equal(isEcho({ start: 60000, end: 62000, text: 'Let us move the launch to next Tuesday.' }, them), false, 'far apart in time');
   assert.equal(isEcho({ start: 10000, end: 11000, text: 'Okay.' }, { ...them, text: 'Okay.' }), false, 'too short to judge');
 });
+
+// ---------- quiet sources (e.g. low-volume Windows system audio) ----------
+import { normalize } from '../src/tab-source.js';
+
+test('chunker adapts to quiet audio that is below the default threshold', () => {
+  const ch = new Chunker();
+  const out = feed(ch, join(quiet(1), tone(3, 0.008), quiet(1)));   // RMS ≈ 0.0057 < 0.012
+  assert.equal(out.length, 1);
+  assert.ok(out[0].startMs >= 650 && out[0].startMs <= 1050, `start ${out[0].startMs}`);
+});
+
+test('chunker still ignores steady background hiss', () => {
+  const ch = new Chunker();
+  let seed = 1; const rand = () => ((seed = (seed * 16807) % 2147483647) / 2147483647 - 0.5);
+  const hiss = Float32Array.from({ length: 10 * SR }, () => rand() * 0.004);
+  assert.equal(feed(ch, hiss).length, 0);
+});
+
+test('normalize boosts quiet clips but leaves loud ones and silence alone', () => {
+  const q = Float32Array.from([0.05, -0.1, 0.02]);
+  normalize(q);
+  assert.ok(Math.abs(Math.max(...q.map(Math.abs)) - 0.9) < 1e-6);
+  const loud = Float32Array.from([0.95, -0.2]); normalize(loud);
+  assert.deepEqual([...loud].map(v => +v.toFixed(2)), [0.95, -0.2]);
+  const tiny = Float32Array.from([0.001]); normalize(tiny);
+  assert.ok(Math.abs(tiny[0] - 0.02) < 1e-6, 'gain capped at 20x');
+  assert.deepEqual([...normalize(new Float32Array(3))], [0, 0, 0]);
+});

@@ -8,6 +8,8 @@
 export class Chunker {
   constructor({ sampleRate = 16000, minSec = 2.5, maxSec = 12, silenceSec = 0.6, frameMs = 30, threshold = 0.012, minVoicedSec = 0.4 } = {}) {
     Object.assign(this, { sampleRate, minSec, maxSec, silenceSec, threshold, minVoicedSec });
+    this.minThreshold = threshold / 4;   // adaptive floor: never more sensitive than this
+    this.floor = threshold;
     this.frame = Math.round(sampleRate * frameMs / 1000);
     this.reset();
   }
@@ -29,7 +31,11 @@ export class Chunker {
     let i = 0;
     for (; i + this.frame <= buf.length; i += this.frame) {
       const f = buf.subarray(i, i + this.frame);
-      const loud = rms(f) >= this.threshold;
+      const level = rms(f);
+      // Track the background noise floor (drops instantly, rises slowly) so quiet
+      // sources such as low-volume system audio still register as speech.
+      this.floor = level < this.floor ? level : this.floor + (level - this.floor) * 0.002;
+      const loud = level >= Math.max(this.minThreshold, Math.min(this.threshold, this.floor * 4));
       this.total += f.length;
 
       if (!this.voiced && !loud) {

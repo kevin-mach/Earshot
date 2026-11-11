@@ -13,7 +13,7 @@ const el = {
   saveStatus: $('saveStatus'), files: $('files'), refresh: $('refreshBtn'),
   banner: $('banner'), theme: $('themeBtn'),
   sourceBtns: document.querySelectorAll('[data-source]'), engineCard: $('engineCard'), model: $('model'),
-  modelBar: $('modelBar'), modelStatus: $('modelStatus'), emptyHint: $('emptyHint'),
+  modelBar: $('modelBar'), modelStatus: $('modelStatus'), emptyHint: $('emptyHint'), diag: $('diag'),
 };
 
 const LANGS = [
@@ -192,10 +192,13 @@ async function startTab() {
         stopRecording();
         return;
       }
+      if (String(e.detail).startsWith('start-failed')) { banner(`Couldn't start capturing audio (${String(e.detail).slice(14)}). Please send this message to the developer.`); return; }
       banner(ERRORS[e.detail] || `Tab transcription error: ${e.detail}`);
     });
     tab.addEventListener('ended', () => { banner('Tab sharing ended. Finishing the last few lines…'); stopRecording(); });
+    tab.addEventListener('diag', (e) => paintDiag(e.detail));
     tab.addEventListener('warning', (e) => {
+      if (e.detail === 'silent-call') banner(SILENT_HELP);
       if (e.detail === 'mic-unavailable') banner('Couldn\'t use your microphone, so only the other people are being transcribed. Allow the mic in the address bar, then stop and record again to include yourself.');
     });
   }
@@ -203,7 +206,9 @@ async function startTab() {
   tab.meeting = meeting;   // the loaded model is reused across Tab and Meeting modes
   recognizer = tab;
   runStart = performance.now();
-  const ok = await tab.start();
+  let ok = false;
+  try { ok = await tab.start(); }
+  catch (err) { banner(`Couldn't start capturing audio (${err?.message || err}).`); }
   if (!ok || recognizer !== tab) { if (recognizer === tab) recognizer = null; setRecUI(false); return; }
   captureBase = elapsedBefore;
   runStart = performance.now();
@@ -258,6 +263,7 @@ async function stopRecording() {
   }
   el.interim.textContent = '';
   setRecUI(false);
+  paintDiag(null);
   if (dirty && el.autosave.checked && folderOk) save({ quiet: true });
 }
 
@@ -402,6 +408,23 @@ function setupLangs() {
     session.lang = el.lang.value;
     if (recognizer instanceof LiveRecognizer) recognizer.setLang(el.lang.value);
   });
+}
+
+const SILENT_HELP = 'Earshot is connected but hearing silence. If you shared your Entire screen, check "Share system audio" was on. In Discord, set User Settings → Voice & Video → Output Device to "Default", and make sure your headset is the Windows default output (speaker icon in the taskbar).';
+
+const bars = (lvl) => {
+  // RMS → 0–5 bars on a dB scale (-60 dB … -10 dB).
+  const db = lvl > 0 ? 20 * Math.log10(lvl) : -100;
+  const n = Math.max(0, Math.min(5, Math.round((db + 60) / 10)));
+  return '▮'.repeat(n) + '▯'.repeat(5 - n);
+};
+
+function paintDiag(d) {
+  if (!d) { el.diag.hidden = true; return; }
+  el.diag.hidden = false;
+  const names = { Them: 'Call audio', You: 'Your mic', Tab: 'Tab audio' };
+  const lanes = d.lanes.map(l => `<span title="${(l.label || '').replace(/"/g, '&quot;')}">${names[l.speaker] || l.speaker} <b class="bars">${bars(l.level)}</b></span>`);
+  el.diag.innerHTML = `${lanes.join('')}<span>${d.sent} clip${d.sent === 1 ? '' : 's'} heard · ${d.done} transcribed</span>`;
 }
 
 function paintModel(p) {
