@@ -197,3 +197,63 @@ test('the live audio check shows sound arriving and clips being transcribed', as
   assert.deepEqual(errors, []);
   await ctx.close();
 });
+
+// Reproduces a Windows report: Chrome rejects raw system-audio capture with
+// "NotReadableError: Could not start audio source" on some audio drivers.
+const strictDriver = (alwaysFail) => `
+  (() => {
+    const real = navigator.mediaDevices.getDisplayMedia;
+    window.__shareCalls = [];
+    navigator.mediaDevices.getDisplayMedia = function (opts) {
+      window.__shareCalls.push(opts.audio);
+      if (${alwaysFail} || typeof opts.audio === 'object') return Promise.reject(new DOMException('Could not start audio source', 'NotReadableError'));
+      return real.call(this, opts);
+    };
+  })();`;
+
+async function openWith(init) {
+  const ctx = await browser.newContext();
+  await ctx.addInitScript(fakes, {});
+  await ctx.addInitScript(init);
+  await ctx.route('**/src/whisper-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: FAKE_WORKER }));
+  const page = await ctx.newPage();
+  const errors = []; page.on('pageerror', e => errors.push(e.message));
+  await page.goto(base);
+  await page.waitForFunction(() => window.__earshot);
+  return { ctx, page, errors };
+}
+
+test('"Could not start audio source" switches to compatibility mode, and the retry works', async () => {
+  const { ctx, page, errors } = await openWith(strictDriver(false));
+  await page.click('[data-source="meeting"]');
+  await page.click('#recBtn');
+  await page.waitForFunction(() => /compatibility mode/.test(document.getElementById('banner').textContent));
+  assert.equal(await page.getAttribute('#recBtn', 'aria-pressed'), 'false');
+
+  await page.click('#recBtn');
+  await page.waitForFunction(() => document.getElementById('recBtn').getAttribute('aria-pressed') === 'true');
+  assert.deepEqual(await page.evaluate(() => window.__shareCalls.map(a => typeof a === 'object' ? 'raw' : String(a))), ['raw', 'true']);
+  await page.waitForFunction(() => window.__earshot.session.segments.length >= 1, null, { timeout: 15000 });
+  await page.click('#recBtn');
+  await page.waitForFunction(() => !window.__earshot.draining);
+
+  // Remembered after a reload, so it doesn't fail first every time.
+  await page.reload();
+  await page.waitForFunction(() => window.__earshot);
+  assert.equal(await page.evaluate(() => window.__earshot.compat), true);
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});
+
+test('if compatibility mode also fails, the Bluetooth / Discord fixes are shown', async () => {
+  const { ctx, page, errors } = await openWith(strictDriver(true));
+  await page.click('[data-source="meeting"]');
+  await page.click('#recBtn');
+  await page.waitForFunction(() => /compatibility mode/.test(document.getElementById('banner').textContent));
+  await page.click('#recBtn');
+  await page.waitForFunction(() => /Hands-Free/.test(document.getElementById('banner').textContent));
+  assert.match(await page.textContent('#banner'), /discord\.com\/app/);
+  assert.equal(await page.getAttribute('#recBtn', 'aria-pressed'), 'false');
+  assert.deepEqual(errors, []);
+  await ctx.close();
+});

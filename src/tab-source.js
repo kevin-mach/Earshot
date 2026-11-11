@@ -33,9 +33,11 @@ class Tap extends AudioWorkletProcessor {
 registerProcessor('earshot-tap', Tap);`;
 
 export class TabTranscriber extends EventTarget {
-  constructor({ model = 'base', lang = 'en-US', meeting = false, workerUrl = new URL('./whisper-worker.js', import.meta.url) } = {}) {
+  constructor({ model = 'base', lang = 'en-US', meeting = false, compat = false, workerUrl = new URL('./whisper-worker.js', import.meta.url) } = {}) {
     super();
-    Object.assign(this, { modelSize: model, lang, meeting, workerUrl });
+    // compat: ask for plain audio with no processing constraints. Some Windows audio
+    // drivers refuse raw system-audio capture with "NotReadableError: Could not start audio source".
+    Object.assign(this, { modelSize: model, lang, meeting, compat, workerUrl });
     this.lanes = [];
     this.wanted = false;
     this.nextId = 0;
@@ -81,12 +83,19 @@ export class TabTranscriber extends EventTarget {
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
         video: true,
-        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: false },
+        audio: this.compat ? true : { echoCancellation: false, noiseSuppression: false, autoGainControl: false, suppressLocalAudioPlayback: false },
         preferCurrentTab: false, selfBrowserSurface: 'exclude', surfaceSwitching: 'include', systemAudio: 'include',
       });
     } catch (err) {
       this.wanted = false;
-      this.#emit('error', err?.name === 'NotAllowedError' ? 'share-cancelled' : (err?.message || 'capture-failed'));
+      if (err?.name === 'NotAllowedError') this.#emit('error', 'share-cancelled');
+      else if (err?.name === 'NotReadableError' || err?.name === 'OverconstrainedError') {
+        // The OS refused the audio device. Retry next time with plain constraints.
+        const first = !this.compat;
+        this.compat = true;
+        this.#emit('compat', true);
+        this.#emit('error', first ? 'audio-busy' : 'audio-busy-again');
+      } else this.#emit('error', `${err?.name || 'Error'}: ${err?.message || 'capture-failed'}`);
       return false;
     }
     const track = stream.getAudioTracks()[0];

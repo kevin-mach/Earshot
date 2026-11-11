@@ -57,6 +57,8 @@ const ERRORS = {
   'share-cancelled': 'Sharing was cancelled. Press record and pick the tab that\'s playing your video.',
   'no-audio': 'No audio came with that share. Press record again, choose the "Chrome Tab" option, pick the tab, and make sure "Also share tab audio" is switched on.',
   'capture-failed': 'Couldn\'t capture that tab\'s audio.',
+  'audio-busy': 'Windows couldn\'t start capturing that audio ("Could not start audio source"). Earshot has switched to compatibility mode: press record and share again.',
+  'audio-busy-again': 'Windows still couldn\'t start the audio capture. This usually means Bluetooth headphones switched to "Hands-Free" mode because Discord is using their microphone. Fix it by doing one of these: (1) in Discord → User Settings → Voice & Video, set Input Device to your laptop or USB mic instead of the headset; (2) use wired headphones; or (3) open Discord in Chrome at discord.com/app and share the Chrome Tab instead of your entire screen.',
 };
 const now = () => elapsedBefore + (recording() ? performance.now() - runStart : 0);
 
@@ -181,7 +183,8 @@ async function startTab() {
   const meeting = source === 'meeting';
   if (!tab || tab.modelSize !== el.model.value) {
     tab?.dispose();
-    tab = new TabTranscriber({ model: el.model.value, lang: el.lang.value, meeting });
+    tab = new TabTranscriber({ model: el.model.value, lang: el.lang.value, meeting, compat: prefs.get('compatAudio', false) });
+    tab.addEventListener('compat', () => prefs.set('compatAudio', true));
     wireCommon(tab);
     tab.addEventListener('interim', (e) => { el.interim.textContent = e.detail; });
     tab.addEventListener('level', (e) => { el.level.style.width = Math.min(100, e.detail * 320) + '%'; });
@@ -539,7 +542,7 @@ async function init() {
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
   // Test hook — lets the browser test inspect state without reaching into closures.
-  window.__earshot = { get session() { return session; }, save, toggle, get folderOk() { return folderOk; }, get draining() { return draining; }, get echoes() { return echoes; } };
+  window.__earshot = { get session() { return session; }, save, toggle, get folderOk() { return folderOk; }, get draining() { return draining; }, get echoes() { return echoes; }, get compat() { return tab?.compat ?? prefs.get('compatAudio', false); } };
 }
 
 init();
